@@ -39,8 +39,9 @@ th, td {text-align:right;}
 <body>
 <p>かっこう Ver {{.Ver}} = 板別発言数 本日 {{.NowDate}}</p>
 <hr>
-本日の発言数 <span id="allres">{{.Allres}}</span> ({{.Date}} {{.Time}} 現在)
+{{.Day}}の発言数 <span id="allres">{{.Allres}}</span> ({{.Date}} {{.Time}} 現在)
 <hr>
+{{.Message}}
 <table>
 <tr><th>順位</th><th>板名</th><th>- 本日の投稿数 -</th><th>server</th></tr>
 `
@@ -51,7 +52,7 @@ const HTML_END = `</table>
 
 const ITA_PATH = "/2ch_sc/dat/ita.data"
 const COUNT_DATA_PATH = "/2ch_sc/scount"
-const VER = "0.01a"
+const VER = "0.01b"
 
 type ScItem struct {
 	Board  string
@@ -72,10 +73,12 @@ func (scs ScItemsByRes) Less(i, j int) bool {
 
 type HtmlStartOutput struct {
 	Ver     string
+	Day     string
 	NowDate string
 	Date    string
 	Time    string
 	Allres  string // カンマ区切り
+	Message string
 }
 
 var g_reg_bbs = regexp.MustCompile(`(.+)\.2ch\.sc/(.+)<>`)
@@ -86,20 +89,36 @@ func main() {
 
 func handler(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
-	path := COUNT_DATA_PATH + "/" + now.Format("2006_01_02") + ".txt"
-	sclist := dataRead(path, now)
+	out := HtmlStartOutput{
+		Ver:     VER,
+		NowDate: now.Format("2006/01/02"),
+	}
+	var path string
 
-	var date string
-	var hms string
-	if st, err := os.Stat(path); err == nil {
-		t := st.ModTime()
-		date = t.Format("2006/01/02")
-		hms = t.Format("15:04:05")
-	} else {
-		date = "-"
-		hms = "-"
+	datestr := r.URL.Query().Get("date")
+	if datestr != "" {
+		t, err := time.Parse("2006/01/02", datestr)
+		if err == nil {
+			path = createPath(t)
+			out.Date = t.Format("2006/01/02")
+			out.Time = "-"
+			out.Day = out.Date
+		}
+	}
+	if path == "" {
+		out.Day = "本日"
+		path = createPath(now)
+		if st, err := os.Stat(path); err == nil {
+			t := st.ModTime()
+			out.Date = t.Format("2006/01/02")
+			out.Time = t.Format("15:04:05")
+		} else {
+			out.Date = "-"
+			out.Time = "-"
+		}
 	}
 
+	sclist := dataRead(path)
 	allres := 0
 	data := &bytes.Buffer{}
 	for i, it := range sclist {
@@ -122,24 +141,22 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(data, "</tr>\n")
 		allres += it.Res
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	out.Allres = commaNum(allres) // カンマ区切り
+	if allres == 0 {
+		out.Message = "<p>書き込みが無いよ。</p>"
+	}
+	w.Header().Set(`Content-Type`, `text/html; charset=utf-8`)
 
 	// ステータスヘッダーの書き込み
 	w.WriteHeader(http.StatusOK)
 	temp := template.Must(template.New("start").Parse(HTML_START))
 	// 本文の書き込み
-	temp.Execute(w, HtmlStartOutput{
-		Ver:     VER,
-		NowDate: now.Format("2006/01/02"),
-		Date:    date,
-		Time:    hms,
-		Allres:  commaNum(allres), // カンマ区切り
-	})
+	temp.Execute(w, out)
 	io.Copy(w, data)
 	io.WriteString(w, HTML_END)
 }
 
-func dataRead(path string, now time.Time) ScItems {
+func dataRead(path string) ScItems {
 	sclist := make(ScItems, 0, 1024)
 	fp, ferr := os.Open(path)
 	if ferr != nil {
@@ -198,4 +215,8 @@ func getBoardServerNameMap() map[string]string {
 		}
 	}
 	return bsm
+}
+
+func createPath(t time.Time) string {
+	return COUNT_DATA_PATH + "/" + t.Format("2006_01_02") + ".txt"
 }
