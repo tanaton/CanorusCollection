@@ -103,6 +103,8 @@ func handler(w http.ResponseWriter, r *http.Request) {
 			out.Date = t.Format("2006/01/02")
 			out.Time = "-"
 			out.Day = out.Date
+		} else {
+			out.Message += "<p>書式が間違ってるっぽい？</p>"
 		}
 	}
 	if path == "" {
@@ -143,7 +145,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	}
 	out.Allres = commaNum(allres) // カンマ区切り
 	if allres == 0 {
-		out.Message = "<p>書き込みが無いよ。</p>"
+		out.Message += "<p>書き込みが無いっぽい？</p>"
 	}
 	w.Header().Set(`Content-Type`, `text/html; charset=utf-8`)
 
