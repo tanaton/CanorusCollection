@@ -3,10 +3,11 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/cgi"
+	"net/http/fcgi"
 	"os"
 	"regexp"
 	"sort"
@@ -43,7 +44,7 @@ th, td {text-align:right;}
 <hr>
 {{.Message}}
 <table>
-<tr><th>順位</th><th>板名</th><th>- 本日の投稿数 -</th><th>server</th></tr>
+<tr><th>順位</th><th>板名</th><th>- 本日の投稿数 -</th><th>- 本日のID数 -</th><th>- 新スレッド数 -</th><th>server</th></tr>
 `
 
 const HTML_END = `</table>
@@ -51,13 +52,21 @@ const HTML_END = `</table>
 </html>`
 
 const ITA_PATH = "/2ch_sc/dat/ita.data"
-const COUNT_DATA_PATH = "/2ch_sc/scount"
+const COUNT_DATA_PATH = "/2ch_sc/scount.json"
 const VER = "0.01b"
 
+type SaveItem struct {
+	Count  int
+	Thread int
+	Id     map[string]int
+}
+
 type ScItem struct {
-	Board  string
-	Server string
-	Res    int
+	Board   string
+	Server  string
+	Res     int
+	IdCount int
+	Thread  int
 }
 type ScItems []*ScItem
 type ScItemsByRes struct {
@@ -66,9 +75,18 @@ type ScItemsByRes struct {
 
 func (sc ScItems) Len() int      { return len(sc) }
 func (sc ScItems) Swap(i, j int) { sc[i], sc[j] = sc[j], sc[i] }
-func (scs ScItemsByRes) Less(i, j int) bool {
+func (scs ScItemsByRes) Less(i, j int) (ret bool) {
 	// レス数降順
-	return scs.ScItems[i].Res > scs.ScItems[j].Res
+	if scs.ScItems[i].Res != scs.ScItems[j].Res {
+		ret = scs.ScItems[i].Res > scs.ScItems[j].Res
+	} else if scs.ScItems[i].IdCount != scs.ScItems[j].IdCount {
+		ret = scs.ScItems[i].IdCount > scs.ScItems[j].IdCount
+	} else if scs.ScItems[i].Thread != scs.ScItems[j].Thread {
+		ret = scs.ScItems[i].Thread > scs.ScItems[j].Thread
+	} else {
+		ret = scs.ScItems[i].Board > scs.ScItems[j].Board
+	}
+	return
 }
 
 type HtmlStartOutput struct {
@@ -82,9 +100,10 @@ type HtmlStartOutput struct {
 }
 
 var g_reg_bbs = regexp.MustCompile(`(.+)\.2ch\.sc/(.+)<>`)
+var gHtmlStart = template.Must(template.New("start").Parse(HTML_START))
 
 func main() {
-	cgi.Serve(http.HandlerFunc(handler))
+	fcgi.Serve(nil, http.HandlerFunc(handler))
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
@@ -139,6 +158,8 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(data, `<td%s>%d</td>`, fsize, i+1)
 		fmt.Fprintf(data, `<td%s>%s</td>`, fsize, it.Board)
 		fmt.Fprintf(data, `<td%s>%s</td>`, fsize, commaNum(it.Res))
+		fmt.Fprintf(data, `<td>%s</td>`, commaNum(it.IdCount))
+		fmt.Fprintf(data, `<td>%s</td>`, commaNum(it.Thread))
 		fmt.Fprintf(data, `<td class="server">%s</td>`, it.Server)
 		fmt.Fprintf(data, "</tr>\n")
 		allres += it.Res
@@ -151,37 +172,33 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 	// ステータスヘッダーの書き込み
 	w.WriteHeader(http.StatusOK)
-	temp := template.Must(template.New("start").Parse(HTML_START))
 	// 本文の書き込み
-	temp.Execute(w, out)
+	gHtmlStart.Execute(w, out)
 	io.Copy(w, data)
 	io.WriteString(w, HTML_END)
 }
 
 func dataRead(path string) ScItems {
-	sclist := make(ScItems, 0, 1024)
-	fp, ferr := os.Open(path)
-	if ferr != nil {
-		return sclist
+	fp, err := os.Open(path)
+	if err != nil {
+		return nil
 	}
 	defer fp.Close()
+	r := bufio.NewReader(fp)
+	data := map[string]*SaveItem{}
+	json.NewDecoder(r).Decode(&data)
+	sclist := make(ScItems, 0, len(data))
 
 	bsm := getBoardServerNameMap()
-	scanner := bufio.NewScanner(fp)
-	for scanner.Scan() {
-		columns := strings.Split(scanner.Text(), "\t")
-		if len(columns) != 2 {
-			continue
+	for board, it := range data {
+		sc := &ScItem{
+			Server:  bsm[board],
+			Board:   board,
+			Res:     it.Count,
+			Thread:  it.Thread,
+			IdCount: len(it.Id),
 		}
-		i, err := strconv.Atoi(columns[1])
-		if err == nil {
-			sc := &ScItem{
-				Server: bsm[columns[0]],
-				Board:  columns[0],
-				Res:    i,
-			}
-			sclist = append(sclist, sc)
-		}
+		sclist = append(sclist, sc)
 	}
 	l := len(sclist)
 	sclist = sclist[:l:l]
@@ -220,5 +237,5 @@ func getBoardServerNameMap() map[string]string {
 }
 
 func createPath(t time.Time) string {
-	return COUNT_DATA_PATH + "/" + t.Format("2006_01_02") + ".txt"
+	return COUNT_DATA_PATH + "/" + t.Format("2006_01_02") + ".json"
 }
